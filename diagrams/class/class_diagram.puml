@@ -1,0 +1,205 @@
+@startuml class_diagram
+title Вариант 19 — Диаграмма классов
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+enum RequestStatus {
+  CREATED
+  WAITING
+  PROCESSING
+  COMPLETED
+  REJECTED
+}
+
+class RequestSource {
+  - sourceId: int
+  - nextRequestId: long
+  - arrivalRate: double
+  --
+  + generateRequest(currentTime: double): Request
+  + scheduleNextArrival(currentTime: double): double
+  - sampleInterarrivalTime(): double
+}
+note right of RequestSource
+  ИБ — число потенциальных клиентов
+  не ограничено.
+  И31 — пуассоновский поток: межприходные
+  интервалы имеют экспоненциальное
+  распределение.
+end note
+
+class Request {
+  - id: long
+  - sourceId: int
+  - arrivalTime: double
+  - serviceStartTime: double
+  - serviceEndTime: double
+  - status: RequestStatus
+  --
+  + markWaiting(): void
+  + startService(time: double): void
+  + complete(time: double): void
+  + reject(time: double): void
+  + waitingTime(): double
+  + serviceTime(): double
+  + systemTime(): double
+}
+
+class RingBuffer {
+  - slots: Request[]
+  - capacity: int
+  - size: int
+  - markerIndex: int
+  --
+  + isEmpty(): boolean
+  + isFull(): boolean
+  + put(request: Request): Request               <<Д1О31, Д1ОО1>>
+  + extractNextFromBatch(sourceId: int): Request <<Д2Б5>>
+  + getBatchSourceId(): int                      <<Д2Б5>>
+  + getRequestsBySource(sourceId: int): Request[]
+  + remove(request: Request): void
+  - findFreeSlotFromMarker(): int
+  - advanceMarker(): void
+}
+note right of RingBuffer
+  Д1О31 — кольцевой буфер: поиск свободного
+  места начинается с текущей позиции маркера.
+  Д1ОО1 — при заполнении буфера заявка
+  в позиции маркера вытесняется, а её место
+  занимает новая заявка.
+  Д2Б5 — выборка заявки из пакета
+  приоритетного источника.
+end note
+
+class AdmissionDispatcher {
+  - buffer: RingBuffer
+  - statistics: Statistics
+  --
+  + onRequestGenerated(request: Request): void
+  - putRequest(request: Request): void
+}
+note left of AdmissionDispatcher
+  Диспетчер постановки.
+  Принимает заявку и передаёт её
+  в кольцевой буфер.
+  Имеет ссылки на буфер и статистику.
+end note
+
+class SelectionDispatcher {
+  - buffer: RingBuffer
+  - deviceRegistry: DeviceRegistry
+  - statistics: Statistics
+  - activeBatchSourceId: int
+  --
+  + onDeviceFreed(device: ServiceDevice, time: double): void
+  + dispatchBatch(time: double): void
+  + continueActiveBatchIfNotExhausted(): boolean  <<Д2Б5>>
+  + resetActiveBatch(): void
+  - selectBatchSource(): int                      <<Д2Б5>>
+  - assignOneRequest(device: ServiceDevice, time: double): void
+}
+note right of SelectionDispatcher
+  Д2Б5 — двухфазное правило:
+  1) сформировать пакет — min(sourceId) среди
+     источников, чьи заявки сейчас в буфере;
+  2) удерживать пакет, пока он не исчерпан,
+     лишь затем перейти к следующему источнику.
+  Д2П1 — свободный прибор выбирается
+  последовательным перебором с прибора №1.
+end note
+
+class DeviceRegistry {
+  - devices: ServiceDevice[]
+  --
+  + findFirstFreeDevice(): ServiceDevice [0..1]
+  + getFreeDevices(): ServiceDevice[]
+  + getDevices(): ServiceDevice[]
+}
+note right of DeviceRegistry
+  Д2П1 — при поиске свободного прибора
+  перебор всегда начинается с прибора №1,
+  затем №2, №3 и далее.
+end note
+
+class ServiceDevice {
+  - deviceId: int
+  - busy: boolean
+  - currentRequest: Request
+  - serviceMin: double
+  - serviceMax: double
+  - accumulatedBusyTime: double
+  --
+  + isFree(): boolean
+  + startService(request: Request, time: double): void
+  + finishService(time: double): Request
+  - sampleServiceTime(): double
+}
+note right of ServiceDevice
+  П32 — равномерное распределение
+  времени обслуживания на интервале
+  [serviceMin, serviceMax].
+  Прибор обслуживает одну заявку
+  одновременно.
+end note
+
+class SimulationController {
+  - currentTime: double
+  - sources: RequestSource[]
+  - admissionDispatcher: AdmissionDispatcher
+  - selectionDispatcher: SelectionDispatcher
+  - deviceRegistry: DeviceRegistry
+  - statistics: Statistics
+  --
+  + initialize(): void
+  + run(untilTime: double): void
+  + handleArrival(source: RequestSource): void
+  + handleCompletion(device: ServiceDevice): void
+  + processNextEvent(): void
+}
+
+class Statistics {
+  - generatedBySource: Map
+  - completedBySource: Map
+  - rejectedBySource: Map
+  - waitingTimesBySource: Map
+  - serviceTimesBySource: Map
+  - systemTimesBySource: Map
+  - deviceBusyTimes: Map
+  --
+  + recordGenerated(request: Request): void
+  + recordRejected(request: Request): void
+  + recordCompleted(request: Request): void
+  + refusalProbability(sourceId: int): double
+  + meanWaitingTime(sourceId: int): double
+  + waitingTimeVariance(sourceId: int): double
+  + meanServiceTime(sourceId: int): double
+  + serviceTimeVariance(sourceId: int): double
+  + meanSystemTime(sourceId: int): double
+  + systemTimeVariance(sourceId: int): double
+  + deviceUtilization(deviceId: int): double
+  + buildAutomaticReport(): void      <<ОР1>>
+  + showStepwiseState(): void         <<ОД1>>
+}
+
+RequestSource        "1" --> "1"    AdmissionDispatcher : передаёт заявки
+AdmissionDispatcher  "1" --> "1"    RingBuffer          : buffer
+AdmissionDispatcher  "1" --> "1"    Statistics          : statistics
+
+SelectionDispatcher  "1" --> "1"    RingBuffer          : buffer
+SelectionDispatcher  "1" --> "1"    DeviceRegistry      : устройства
+SelectionDispatcher  "1" --> "1"    Statistics          : statistics
+
+DeviceRegistry       "1" o-- "1..*" ServiceDevice       : devices
+RingBuffer           "1" o-- "0..*" Request             : slots
+ServiceDevice        "1" --> "0..1" Request             : currentRequest
+
+SimulationController --> "1..*"     RequestSource       : sources
+SimulationController -->            AdmissionDispatcher
+SimulationController -->            SelectionDispatcher
+SimulationController -->            DeviceRegistry
+SimulationController -->            Statistics
+
+Request --> RequestStatus
+
+@enduml

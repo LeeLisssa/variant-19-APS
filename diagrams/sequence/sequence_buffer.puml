@@ -1,0 +1,41 @@
+@startuml sequence_buffer
+title Вариант 19 — Постановка заявки в буфер (Д1О31 / Д1ОО1)
+
+autonumber
+skinparam responseMessageBelowArrow true
+
+participant "Диспетчер постановки" as DP
+queue       "Буфер (кольцевой)"    as BUF
+participant "Новая заявка"         as NEW
+participant "Заявка под маркером"  as OLD
+participant "Статистика"           as STAT
+actor       "Источник"             as SRC
+
+note over BUF
+  Д1О31 — поиск свободного слота начинается
+  от позиции маркера (после последней занятой).
+  Д1ОО1 — при полном буфере заменяется
+  заявка в позиции маркера, а её место
+  занимает новая заявка.
+end note
+
+DP -> BUF: put(NEW)
+activate BUF
+BUF -> BUF: isFull()
+
+alt Буфер не заполнен (Д1О31)
+  BUF -> BUF: найти свободный слот от маркера
+  BUF -> BUF: сохранить NEW
+  BUF --> DP: заявка поставлена
+else Буфер заполнен (Д1ОО1)
+  BUF -> BUF: определить позицию маркера
+  BUF -> OLD: получить заявку под маркером
+  BUF -> STAT: recordRejected(OLD)
+  BUF -> SRC: уведомление об отказе клиенту
+  BUF -> BUF: заменить OLD на NEW
+  BUF -> BUF: advanceMarker()
+  BUF --> DP: заявка поставлена, OLD вытеснена
+end
+deactivate BUF
+
+@enduml

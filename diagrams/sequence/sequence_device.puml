@@ -1,0 +1,66 @@
+@startuml sequence_device
+title Вариант 19 — Выборка из буфера и постановка на прибор (Д2Б5 / Д2П1)
+
+autonumber
+skinparam responseMessageBelowArrow true
+
+participant "Диспетчер выбора"  as DV
+participant "Реестр приборов"   as REG
+queue       "Буфер (кольцевой)" as BUF
+participant "Прибор (П32)"      as DEV
+participant "Заявка"            as REQ
+participant "Статистика"        as STAT
+
+note over DV
+  Д2Б5 — двухфазное правило:
+  1) сформировать пакет: min(sourceId) среди
+     источников, чьи заявки сейчас в буфере;
+  2) удерживать пакет, пока он не исчерпан,
+     затем перейти к следующему источнику.
+  Д2П1 — свободный прибор выбирается
+  последовательным перебором с прибора №1.
+end note
+
+== Освобождение прибора ==
+DEV -> DV: прибор освобождён (номер прибора)
+
+== Шаг 1. Работа с пакетом (Д2Б5) ==
+DV -> BUF: есть ли заявки?
+BUF --> DV: да / нет
+
+alt Буфер пуст
+  DV -> DV: ожидать следующего события
+else В буфере есть заявки
+
+  alt Активный пакет исчерпан или отсутствует
+    DV -> BUF: getBatchSourceId()
+    BUF --> DV: min(sourceId)
+    DV -> DV: зафиксировать активный пакет
+  else Активный пакет не исчерпан
+    DV -> DV: продолжить выбор из текущего пакета
+  end
+
+  == Шаг 2. Выбор прибора (Д2П1) ==
+  DV -> REG: findFirstFreeDevice()
+  REG --> DV: первый свободный прибор\n(или null)
+
+  alt Свободный прибор найден
+    DV -> BUF: extractNextFromBatch(activeBatchSourceId)
+    BUF --> DV: REQ
+    DV -> DEV: startService(REQ, currentTime)
+    DEV -> DEV: установить состояние BUSY
+    DEV -> DEV: sampleServiceTime() — П32
+    DEV --> DV: время завершения обслуживания
+    DV -> STAT: зарегистрировать начало обслуживания
+  else Свободных приборов нет
+    DV -> DV: оставить заявки в буфере
+  end
+
+end
+
+== Завершение обслуживания ==
+DEV -> DEV: finishService(currentTime)
+DEV -> DEV: установить состояние FREE
+DEV --> DV: прибор освобождён повторно
+
+@enduml

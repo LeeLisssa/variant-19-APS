@@ -1,0 +1,114 @@
+@startuml sequence_main
+title Вариант 19 — Основной сценарий обработки заявок
+
+autonumber
+skinparam responseMessageBelowArrow true
+
+actor       "Источник (ИБ, И31)"     as SRC
+participant "Диспетчер постановки"   as DP
+queue       "Буфер (кольцевой)"      as BUF
+participant "Диспетчер выбора"       as DV
+participant "Прибор (П32)"           as DEV
+participant "Статистика"             as STAT
+
+== Генерация заявки (ИБ, И31) ==
+SRC -> DP: Новая заявка (номер клиента, тип поломки, адрес)
+note right of SRC
+  ИБ — число потенциальных клиентов не ограничено.
+  И31 — пуассоновский поток: интервалы между
+  обращениями распределены экспоненциально.
+end note
+
+== Постановка в буфер (Д1О31 / Д1ОО1) ==
+DP -> BUF: put(Заявка)
+note right of BUF
+  Д1О31 — запись «по кольцу»: поиск свободной
+  ячейки начинается с позиции, следующей
+  за последней занятой (от маркера).
+end note
+activate BUF
+
+alt Буфер свободен (HappyFlow)
+  BUF --> DP: ok(ячейка занята)
+else Буфер переполнен (Д1ОО1)
+  note right of BUF
+    Д1ОО1 — отказ: удаляется заявка,
+    на которую указывает маркер,
+    новая занимает её место.
+  end note
+  BUF -> BUF: remove(Заявка под маркером)
+  BUF -> STAT: recordRejected(заявка)
+  BUF -> SRC: уведомление об отказе клиенту
+  BUF -> BUF: заявка занимает освободившуюся ячейку
+  BUF --> DP: replaced(старая удалена)
+end
+deactivate BUF
+
+== Ожидание освобождения прибора ==
+loop Пока все приборы заняты
+  DV -> DEV: свободен?
+  DEV --> DV: нет
+end
+
+== Освобождение прибора и работа с пакетом (Д2Б5) ==
+DEV -> DV: прибор освободился (номер прибора)
+note right of DV
+  Д2Б5 — пакетный приоритет по источнику:
+  - формирование пакета: min(sourceId) среди
+    источников, чьи заявки сейчас в буфере;
+  - удержание пакета: продолжаем выбирать
+    заявки этого источника, пока пакет не исчерпан.
+end note
+
+DV -> BUF: есть ли заявки?
+activate BUF
+BUF --> DV: да / нет
+deactivate BUF
+
+alt Буфер пуст
+  DV -> DV: ожидать следующего события
+else В буфере есть заявки
+
+  alt Активный пакет исчерпан или отсутствует
+    DV -> BUF: getBatchSourceId()
+    activate BUF
+    BUF --> DV: min(sourceId) среди присутствующих
+    deactivate BUF
+    DV -> DV: зафиксировать активный пакет (Д2Б5)
+  else Активный пакет не исчерпан
+    DV -> DV: продолжить выбор из текущего пакета (Д2Б5)
+  end
+
+  == Постановка на прибор (Д2П1) ==
+  DV -> BUF: extractNextFromBatch(activeBatchSourceId)
+  activate BUF
+  BUF --> DV: Заявка
+  deactivate BUF
+
+  loop Пока пакет активного источника не исчерпан
+    DV -> DEV: assign(Заявка)
+    activate DEV
+    DEV -> DEV: обработать обращение\n(связаться с клиентом, сформировать задание)
+    DEV --> DV: заявка обработана
+    deactivate DEV
+    DV -> STAT: recordCompleted(Заявка)
+    DV -> BUF: extractNextFromBatch(activeBatchSourceId)
+    activate BUF
+    BUF --> DV: следующая Заявка / пусто
+    deactivate BUF
+  end
+
+  DV -> DV: сбросить активный пакет, если он исчерпан
+
+end
+
+== HappyFlow (буфер свободен, прибор свободен) ==
+SRC -> DP: заявка
+DP -> BUF: put(Заявка) — Д1О31
+BUF --> DP: ok
+DP -> DV: уведомить о новой заявке
+DV -> DEV: assign(Заявка) — Д2П1
+DEV --> DV: завершено
+DV -> BUF: remove(Заявка)
+
+@enduml
